@@ -295,3 +295,100 @@ fn get_disk_available() -> Option<f64> {
     
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn test_config() -> Config {
+        let temp_dir = TempDir::new().unwrap();
+        Config {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            config_path: temp_dir.path().join("config.toml"),
+            default_provider: Some("anthropic".to_string()),
+            default_model: Some("claude-sonnet".to_string()),
+            autonomy: crate::autonomy::AutonomyConfig::default(),
+            observability: crate::observability::ObservabilityConfig::default(),
+            memory: crate::memory::MemoryConfig::default(),
+            storage: crate::storage::StorageConfig::default(),
+            channels_config: crate::channels::ChannelsConfig::default(),
+            runtime: crate::runtime::RuntimeConfig::default(),
+            tunnel: crate::tunnel::TunnelConfig::default(),
+            skills: crate::skills::SkillsConfig::default(),
+            cron: crate::cron::CronConfig::default(),
+            security: crate::security::SecurityConfig::default(),
+        }
+    }
+
+    #[test]
+    fn test_generate_status_report() {
+        let config = test_config();
+        let report = generate_status_report(&config);
+        
+        assert_eq!(report.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(report.provider.default_provider, "anthropic");
+        assert_eq!(report.provider.default_model, "claude-sonnet");
+        assert!(report.workspace.contains("zeroclaw"));
+    }
+
+    #[test]
+    fn test_format_human_status() {
+        let config = test_config();
+        let report = generate_status_report(&config);
+        let output = format_human_status(&report);
+        
+        assert!(output.contains("ZeroClaw Status"));
+        assert!(output.contains("Provider:"));
+        assert!(output.contains("Memory:"));
+    }
+
+    #[test]
+    fn test_format_brief_status() {
+        let config = test_config();
+        let report = generate_status_report(&config);
+        let output = format_brief_status(&report);
+        
+        assert!(output.contains("ZeroClaw v"));
+        assert!(output.contains("Provider:"));
+        assert!(output.contains("Memory:"));
+        assert!(output.contains("Service:"));
+    }
+
+    #[test]
+    fn test_get_uptime() {
+        let uptime = get_uptime();
+        // Should return either a formatted string or "unknown"
+        assert!(!uptime.is_empty());
+    }
+
+    #[test]
+    fn test_get_memory_usage() {
+        let mem = get_memory_usage();
+        // May be None on non-Linux or Some(value) on Linux
+        #[cfg(target_os = "linux")]
+        assert!(mem.is_some());
+    }
+
+    #[test]
+    fn test_get_disk_available() {
+        let disk = get_disk_available();
+        // May be None or Some(value)
+        #[cfg(unix)]
+        assert!(disk.is_some());
+    }
+
+    #[test]
+    fn test_run_status_json() {
+        let config = test_config();
+        let result = run_status(&config, "json", None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_run_status_brief() {
+        let config = test_config();
+        let result = run_status(&config, "brief", None);
+        assert!(result.is_ok());
+    }
+}

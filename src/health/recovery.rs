@@ -179,3 +179,88 @@ pub fn recover_failure_by_id(config: &Config, failure_id: &str, dry_run: bool) -
         steps,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::health::failure::{record_failure, FailureSeverity};
+    use tempfile::TempDir;
+
+    fn test_config() -> Config {
+        let temp_dir = TempDir::new().unwrap();
+        Config {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            config_path: temp_dir.path().join("config.toml"),
+            default_provider: Some("anthropic".to_string()),
+            default_model: Some("claude-sonnet".to_string()),
+            autonomy: crate::autonomy::AutonomyConfig::default(),
+            observability: crate::observability::ObservabilityConfig::default(),
+            memory: crate::memory::MemoryConfig::default(),
+            storage: crate::storage::StorageConfig::default(),
+            channels_config: crate::channels::ChannelsConfig::default(),
+            runtime: crate::runtime::RuntimeConfig::default(),
+            tunnel: crate::tunnel::TunnelConfig::default(),
+            skills: crate::skills::SkillsConfig::default(),
+            cron: crate::cron::CronConfig::default(),
+            security: crate::security::SecurityConfig::default(),
+        }
+    }
+
+    #[test]
+    fn test_recovery_plan_for_memory_failure() {
+        let plan = recovery_plan(FailureKind::Memory);
+        assert!(plan.contains(&RecoveryAction::EnsureMemoryDir));
+        assert!(plan.contains(&RecoveryAction::EnsureStateDir));
+    }
+
+    #[test]
+    fn test_recovery_plan_for_session_failure() {
+        let plan = recovery_plan(FailureKind::Session);
+        assert!(plan.contains(&RecoveryAction::EnsureSessionsDir));
+    }
+
+    #[test]
+    fn test_recovery_plan_for_provider_failure() {
+        let plan = recovery_plan(FailureKind::Provider);
+        assert!(plan.contains(&RecoveryAction::SuggestProviderCheck));
+    }
+
+    #[test]
+    fn test_run_action_ensure_memory_dir() {
+        let config = test_config();
+        let result = run_action(&RecoveryAction::EnsureMemoryDir, &config, false);
+        
+        assert!(result.ok);
+        assert!(result.message.contains("ensured"));
+        assert!(result.message.contains("memory"));
+    }
+
+    #[test]
+    fn test_run_action_dry_run() {
+        let config = test_config();
+        let result = run_action(&RecoveryAction::EnsureMemoryDir, &config, true);
+        
+        assert!(result.ok);
+        assert!(result.message.contains("[dry-run]"));
+    }
+
+    #[test]
+    fn test_recover_failure_by_id() {
+        let config = test_config();
+        
+        // Record a failure
+        let failure_id = record_failure(
+            FailureKind::Memory,
+            FailureSeverity::High,
+            "memory dir missing",
+            std::collections::BTreeMap::new(),
+        );
+        
+        // Run recovery
+        let report = recover_failure_by_id(&config, &failure_id, false).unwrap();
+        
+        assert_eq!(report.kind, FailureKind::Memory);
+        assert!(report.success);
+        assert!(!report.steps.is_empty());
+    }
+}
