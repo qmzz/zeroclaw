@@ -38,6 +38,7 @@ pub mod otp;
 pub mod pairing;
 pub mod playbook;
 pub mod policy;
+pub mod policy_engine;
 pub mod prompt_guard;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
@@ -60,6 +61,7 @@ pub use otp::OtpValidator;
 #[allow(unused_imports)]
 pub use pairing::PairingGuard;
 pub use policy::{AutonomyLevel, SecurityPolicy};
+pub use policy_engine::{EvaluationContext, PolicyDecision, PolicyEngine};
 #[allow(unused_imports)]
 pub use secrets::SecretStore;
 #[allow(unused_imports)]

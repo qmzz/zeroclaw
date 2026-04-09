@@ -8940,6 +8940,38 @@ async fn ensure_bootstrap_files(workspace_dir: &Path) -> Result<()> {
 }
 
 impl Config {
+    /// Merge another config layer into self with last-write-wins semantics.
+    ///
+    /// This is a generic TOML-value merge used for layered config loading
+    /// (user -> project -> local). Scalars/arrays overwrite; tables merge recursively.
+    pub fn apply_layer(&mut self, layer: Config) {
+        fn merge_values(base: &mut toml::Value, override_v: toml::Value) {
+            match (base, override_v) {
+                (toml::Value::Table(base_t), toml::Value::Table(ov_t)) => {
+                    for (k, v) in ov_t {
+                        match base_t.get_mut(&k) {
+                            Some(existing) => merge_values(existing, v),
+                            None => {
+                                base_t.insert(k, v);
+                            }
+                        }
+                    }
+                }
+                (base_slot, ov) => {
+                    *base_slot = ov;
+                }
+            }
+        }
+
+        let mut base_v = toml::Value::try_from(self.clone()).unwrap_or(toml::Value::Table(toml::map::Map::new()));
+        let layer_v = toml::Value::try_from(layer).unwrap_or(toml::Value::Table(toml::map::Map::new()));
+        merge_values(&mut base_v, layer_v);
+
+        if let Ok(merged) = base_v.try_into::<Config>() {
+            *self = merged;
+        }
+    }
+
     pub async fn load_or_init() -> Result<Self> {
         let (default_zeroclaw_dir, default_workspace_dir) = default_config_and_workspace_dirs()?;
 

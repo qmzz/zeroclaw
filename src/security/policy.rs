@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use super::policy_engine::{PolicyDecision, PolicyEngine};
+
 /// How much autonomy the agent has
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -185,6 +187,8 @@ pub struct SecurityPolicy {
     pub shell_env_passthrough: Vec<String>,
     pub shell_timeout_secs: u64,
     pub tracker: PerSenderTracker,
+    /// P1 strategy layer: explicit rule engine before built-in policy gates.
+    pub policy_engine: PolicyEngine,
 }
 
 /// Default allowed commands for Unix platforms.
@@ -318,6 +322,7 @@ impl Default for SecurityPolicy {
             shell_env_passthrough: vec![],
             shell_timeout_secs: 60,
             tracker: PerSenderTracker::new(),
+            policy_engine: PolicyEngine::with_default_rules(),
         }
     }
 }
@@ -1005,11 +1010,39 @@ impl SecurityPolicy {
         command: &str,
         approved: bool,
     ) -> Result<CommandRiskLevel, String> {
+        self.validate_command_execution_with_context(
+            command,
+            approved,
+            &super::policy_engine::EvaluationContext::default(),
+        )
+    }
+
+    pub fn validate_command_execution_with_context(
+        &self,
+        command: &str,
+        approved: bool,
+        eval_ctx: &super::policy_engine::EvaluationContext,
+    ) -> Result<CommandRiskLevel, String> {
         if !self.is_command_allowed(command) {
             return Err(format!("Command not allowed by security policy: {command}"));
         }
 
         let risk = self.command_risk_level(command);
+
+        // P1 strategy layer (rule engine) runs before built-in gates.
+        if let Some((decision, reason)) = self.policy_engine.evaluate_with_context(command, risk, eval_ctx) {
+            match decision {
+                PolicyDecision::Deny => {
+                    return Err(format!("Command denied by strategy rule: {reason}"));
+                }
+                PolicyDecision::RequireApproval if !approved => {
+                    return Err(format!(
+                        "Command requires approval by strategy rule (approved=true): {reason}"
+                    ));
+                }
+                _ => {}
+            }
+        }
 
         // When the operator has set `allowed_commands = ["*"]` AND explicitly
         // disabled `block_high_risk_commands`, they have opted out of all
@@ -1607,6 +1640,7 @@ impl SecurityPolicy {
             shell_env_passthrough: autonomy_config.shell_env_passthrough.clone(),
             shell_timeout_secs: autonomy_config.shell_timeout_secs,
             tracker: PerSenderTracker::new(),
+            policy_engine: PolicyEngine::with_default_rules(),
         }
     }
 

@@ -262,7 +262,15 @@ impl Tool for CronAddTool {
                     }
                 };
 
-                if let Err(reason) = self.security.validate_command_execution(command, approved) {
+                let eval_ctx = crate::security::EvaluationContext {
+                    tool_name: Some("cron_add".to_string()),
+                    sender_id: None,
+                    channel: Some("cron".to_string()),
+                };
+                if let Err(reason) = self
+                    .security
+                    .validate_command_execution_with_context(command, approved, &eval_ctx)
+                {
                     return Ok(ToolResult {
                         success: false,
                         output: String::new(),

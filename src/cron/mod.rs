@@ -39,8 +39,13 @@ pub(crate) fn validate_shell_command_with_security(
     command: &str,
     approved: bool,
 ) -> Result<()> {
+    let eval_ctx = crate::security::EvaluationContext {
+        tool_name: Some("cron".to_string()),
+        sender_id: None,
+        channel: Some("cron".to_string()),
+    };
     security
-        .validate_command_execution(command, approved)
+        .validate_command_execution_with_context(command, approved, &eval_ctx)
         .map(|_| ())
         .map_err(|reason| anyhow!("blocked by security policy: {reason}"))
 }

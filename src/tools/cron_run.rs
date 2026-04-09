@@ -95,9 +95,14 @@ impl Tool for CronRunTool {
         };
 
         if matches!(job.job_type, JobType::Shell) {
+            let eval_ctx = crate::security::EvaluationContext {
+                tool_name: Some("cron_run".to_string()),
+                sender_id: None,
+                channel: Some("cron".to_string()),
+            };
             if let Err(reason) = self
                 .security
-                .validate_command_execution(&job.command, approved)
+                .validate_command_execution_with_context(&job.command, approved, &eval_ctx)
             {
                 return Ok(ToolResult {
                     success: false,

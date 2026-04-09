@@ -1,3 +1,4 @@
+pub mod layered;
 pub mod schema;
 pub mod traits;
 pub mod workspace;

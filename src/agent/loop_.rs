@@ -14,6 +14,8 @@ use crate::security::{AutonomyLevel, SecurityPolicy};
 use crate::tools::{self, Tool};
 use crate::util::truncate_with_ellipsis;
 use anyhow::Result;
+use super::deterministic_compactor::{compact_memory_entries, CompressionBudget};
+use crate::health::failure::{record_failure, FailureKind, FailureSeverity};
 use futures_util::StreamExt;
 use regex::{Regex, RegexSet};
 use std::collections::HashSet;
@@ -317,34 +319,49 @@ async fn build_context(
         // Apply time decay: older non-Core memories score lower
         decay::apply_time_decay(&mut entries, decay::DEFAULT_HALF_LIFE_DAYS);
 
-        let relevant: Vec<_> = entries
-            .iter()
+        // Filter invalid/unsafe entries first
+        let filtered: Vec<_> = entries
+            .into_iter()
             .filter(|e| match e.score {
                 Some(score) => score >= min_relevance_score,
                 None => true,
             })
+            .filter(|e| !memory::is_assistant_autosave_key(&e.key))
+            .filter(|e| !memory::should_skip_autosave_content(&e.content))
+            .filter(|e| !e.content.contains("<tool_result"))
             .collect();
 
-        if !relevant.is_empty() {
-            context.push_str("[Memory context]\n");
-            for entry in &relevant {
-                if memory::is_assistant_autosave_key(&entry.key) {
-                    continue;
+        if !filtered.is_empty() {
+            // P0-3: deterministic pre-compaction layer
+            let compacted = compact_memory_entries(
+                &filtered,
+                CompressionBudget {
+                    max_chars: 4_000,
+                    max_entries: 4,
+                    max_entry_chars: 800,
+                },
+            );
+
+            if !compacted.lines.is_empty() {
+                context.push_str("[Memory context]\n");
+                for line in &compacted.lines {
+                    let _ = writeln!(context, "- {}: {}", line.key, line.content);
                 }
-                if memory::should_skip_autosave_content(&entry.content) {
-                    continue;
+
+                // Optional diagnostics line for deterministic compaction visibility
+                if compacted.stats.removed_duplicates > 0
+                    || compacted.stats.truncated_entries > 0
+                    || compacted.stats.omitted_entries > 0
+                {
+                    let _ = writeln!(
+                        context,
+                        "- _compaction: removed_duplicates={}, truncated={}, omitted={}",
+                        compacted.stats.removed_duplicates,
+                        compacted.stats.truncated_entries,
+                        compacted.stats.omitted_entries
+                    );
                 }
-                // Skip entries containing tool_result blocks — they can leak
-                // stale tool output from previous heartbeat ticks into new
-                // sessions, presenting the LLM with orphan tool_result data.
-                if entry.content.contains("<tool_result") {
-                    continue;
-                }
-                let _ = writeln!(context, "- {}: {}", entry.key, entry.content);
-            }
-            if context == "[Memory context]\n" {
-                context.clear();
-            } else {
+
                 context.push_str("[/Memory context]\n\n");
             }
         }
@@ -2831,8 +2848,27 @@ pub(crate) async fn run_tool_call_loop(
 
                     // Nothing left to trim — truly unrecoverable
                     tracing::error!("Context overflow unrecoverable: no trimmable messages");
+                    let mut ctx = std::collections::BTreeMap::new();
+                    ctx.insert("phase".to_string(), "tool_loop".to_string());
+                    ctx.insert("iteration".to_string(), format!("{}", iteration + 1));
+                    record_failure(
+                        FailureKind::Compact,
+                        FailureSeverity::High,
+                        "context overflow unrecoverable in tool loop",
+                        ctx,
+                    );
                 }
 
+                let mut ctx = std::collections::BTreeMap::new();
+                ctx.insert("phase".to_string(), "llm_request".to_string());
+                ctx.insert("provider".to_string(), provider_name.to_string());
+                ctx.insert("model".to_string(), model.to_string());
+                record_failure(
+                    FailureKind::Provider,
+                    FailureSeverity::High,
+                    format!("llm request failed: {}", crate::providers::sanitize_api_error(&e.to_string())),
+                    ctx,
+                );
                 return Err(e);
             }
         };
@@ -4360,6 +4396,15 @@ pub async fn run(
                                     tracing::warn!(
                                         error = %compress_err,
                                         "Compression failed during recovery"
+                                    );
+                                    let mut ctx = std::collections::BTreeMap::new();
+                                    ctx.insert("phase".to_string(), "interactive_loop".to_string());
+                                    ctx.insert("error".to_string(), compress_err.to_string());
+                                    record_failure(
+                                        FailureKind::Compact,
+                                        FailureSeverity::High,
+                                        "compression failed during interactive recovery",
+                                        ctx,
                                     );
                                 }
                             }

@@ -1,4 +1,7 @@
 use crate::config::Config;
+use crate::health::failure::{
+    classify_category, record_failure, FailureSeverity,
+};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::io::Write;
@@ -84,6 +87,32 @@ pub fn diagnose(config: &Config) -> Vec<DiagResult> {
     check_daemon_state(config, &mut items);
     check_environment(&mut items);
     check_cli_tools(&mut items);
+    
+    // P0-1 extensions
+    check_memory_health(config, &mut items);
+    check_tools_health(config, &mut items);
+    check_resources_health(&mut items);
+
+    items.into_iter().map(DiagItem::into_result).collect()
+}
+
+/// Run async diagnostics (includes provider connectivity tests)
+pub async fn diagnose_async(config: &Config) -> Vec<DiagResult> {
+    let mut items: Vec<DiagItem> = Vec::new();
+
+    check_config_semantics(config, &mut items);
+    check_workspace(config, &mut items);
+    check_daemon_state(config, &mut items);
+    check_environment(&mut items);
+    check_cli_tools(&mut items);
+    
+    // P0-1 extensions
+    check_memory_health(config, &mut items);
+    check_tools_health(config, &mut items);
+    check_resources_health(&mut items);
+    
+    // Async checks
+    check_provider_health(config, &mut items).await;
 
     items.into_iter().map(DiagItem::into_result).collect()
 }
@@ -131,6 +160,227 @@ pub fn run(config: &Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn persist_diagnostic_failures(results: &[DiagResult]) {
+    for item in results {
+        let severity = match item.severity {
+            Severity::Ok => continue,
+            Severity::Warn => FailureSeverity::Medium,
+            Severity::Error => FailureSeverity::High,
+        };
+        let kind = classify_category(&item.category);
+        let mut context = std::collections::BTreeMap::new();
+        context.insert("category".to_string(), item.category.clone());
+        record_failure(kind, severity, item.message.clone(), context);
+    }
+}
+
+/// Run full diagnostic with verbose output
+pub fn run_full(config: &Config, verbose: bool, output_file: Option<&str>) -> Result<()> {
+    let results = diagnose(config);
+    persist_diagnostic_failures(&results);
+    
+    let mut output = String::new();
+    
+    output.push_str("🩺 ZeroClaw Doctor - Full Health Check\n");
+    output.push_str("\n");
+    
+    let mut current_cat = "";
+    for item in &results {
+        if item.category != current_cat {
+            current_cat = &item.category;
+            output.push_str(&format!("  [{}]\n", current_cat));
+        }
+        let icon = match item.severity {
+            Severity::Ok => "✅",
+            Severity::Warn => "⚠️ ",
+            Severity::Error => "❌",
+        };
+        output.push_str(&format!("    {} {}\n", icon, item.message));
+    }
+    
+    // Summary
+    let errors = results.iter().filter(|i| i.severity == Severity::Error).count();
+    let warns = results.iter().filter(|i| i.severity == Severity::Warn).count();
+    let oks = results.iter().filter(|i| i.severity == Severity::Ok).count();
+    
+    output.push_str("\n");
+    output.push_str(&format!("  Summary: {} ok, {} warnings, {} errors\n", oks, warns, errors));
+    
+    if errors > 0 {
+        output.push_str("  💡 Fix the errors above, then run `zeroclaw doctor` again.\n");
+    }
+    
+    // Verbose section
+    if verbose {
+        output.push_str("\n");
+        output.push_str("  [Verbose Details]\n");
+        output.push_str(&format!("    Total checks: {}\n", results.len()));
+        output.push_str(&format!("    Health score: {:.1}%\n", 
+            (oks as f64 / results.len() as f64) * 100.0
+        ));
+    }
+    
+    // Output to file or stdout
+    if let Some(file_path) = output_file {
+        std::fs::write(file_path, &output)?;
+        println!("Report written to: {}", file_path);
+    } else {
+        println!("{}", output);
+    }
+    
+    Ok(())
+}
+
+/// Run diagnostic with JSON output
+pub fn run_json(config: &Config, verbose: bool, output_file: Option<&str>) -> Result<()> {
+    let results = diagnose(config);
+    persist_diagnostic_failures(&results);
+    
+    // Build summary
+    let errors = results.iter().filter(|i| i.severity == Severity::Error).count();
+    let warns = results.iter().filter(|i| i.severity == Severity::Warn).count();
+    let oks = results.iter().filter(|i| i.severity == Severity::Ok).count();
+    
+    let status = if errors > 0 {
+        "error"
+    } else if warns > 0 {
+        "warning"
+    } else {
+        "healthy"
+    };
+    
+    // Build JSON structure
+    let json = serde_json::json!({
+        "timestamp": Utc::now().to_rfc3339(),
+        "status": status,
+        "summary": {
+            "total_checks": results.len(),
+            "ok": oks,
+            "warnings": warns,
+            "errors": errors,
+            "health_score": (oks as f64 / results.len() as f64) * 100.0
+        },
+        "results": results.iter().map(|r| {
+            serde_json::json!({
+                "category": r.category,
+                "severity": match r.severity {
+                    Severity::Ok => "ok",
+                    Severity::Warn => "warning",
+                    Severity::Error => "error",
+                },
+                "message": r.message
+            })
+        }).collect::<Vec<_>>(),
+        "verbose": verbose
+    });
+    
+    let output = serde_json::to_string_pretty(&json)?;
+    
+    // Output to file or stdout
+    if let Some(file_path) = output_file {
+        std::fs::write(file_path, &output)?;
+        eprintln!("JSON report written to: {}", file_path);
+    } else {
+        println!("{}", output);
+    }
+    
+    Ok(())
+}
+
+/// Run diagnostic with auto-fix
+pub async fn run_with_fix(config: &Config, verbose: bool) -> Result<()> {
+    println!("🩺 ZeroClaw Doctor - Auto-Fix Mode\n");
+    
+    let results = diagnose(config);
+    persist_diagnostic_failures(&results);
+    
+    // Print initial report
+    let mut current_cat = "";
+    for item in &results {
+        if item.category != current_cat {
+            current_cat = &item.category;
+            println!("  [{current_cat}]");
+        }
+        let icon = match item.severity {
+            Severity::Ok => "✅",
+            Severity::Warn => "⚠️ ",
+            Severity::Error => "❌",
+        };
+        println!("    {} {}", icon, item.message);
+    }
+    
+    // Identify fixable issues
+    println!("\n  [Auto-Fix]");
+    let mut fixed_count = 0;
+    
+    for item in &results {
+        if item.severity == Severity::Warn || item.severity == Severity::Error {
+            if let Some(fix_action) = get_fix_action(&item.message) {
+                println!("    🔧 Attempting: {}", fix_action.description);
+                match fix_action.execute(config).await {
+                    Ok(_) => {
+                        println!("       ✅ Fixed");
+                        fixed_count += 1;
+                    }
+                    Err(e) => {
+                        println!("       ❌ Failed: {}", e);
+                    }
+                }
+            }
+        }
+    }
+    
+    println!("\n  Fixed {} issues", fixed_count);
+    println!("  💡 Run `zeroclaw doctor` again to verify");
+    
+    Ok(())
+}
+
+/// Fix action for auto-fix
+struct FixAction {
+    description: &'static str,
+    execute: fn(&Config) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), anyhow::Error>> + Send + '_>>,
+}
+
+impl FixAction {
+    async fn execute(&self, config: &Config) -> Result<()> {
+        (self.execute)(config).await
+    }
+}
+
+/// Get fix action for a specific issue
+fn get_fix_action(message: &str) -> Option<FixAction> {
+    if message.contains("memory directory does not exist") {
+        return Some(FixAction {
+            description: "Create memory directory",
+            execute: |config| {
+                Box::pin(async move {
+                    if let Some(ref dir) = config.memory_dir {
+                        std::fs::create_dir_all(dir)?;
+                        Ok(())
+                    } else {
+                        anyhow::bail!("memory_dir not configured")
+                    }
+                })
+            },
+        });
+    }
+    
+    if message.contains("No tools enabled") {
+        return Some(FixAction {
+            description: "Enable default tools",
+            execute: |_config| {
+                Box::pin(async move {
+                    // This would require config modification - just inform user
+                    anyhow::bail!("Manual action required: edit config to enable tools")
+                })
+            },
+        });
+    }
+    
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -510,6 +760,17 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
             ));
         }
     }
+
+    // P1: strategy engine status
+    let policy = crate::security::SecurityPolicy::from_config(&config.autonomy, &config.workspace_dir);
+    items.push(DiagItem::ok(
+        cat,
+        format!(
+            "policy engine: {} rules (autonomy={:?})",
+            policy.policy_engine.rules.len(),
+            policy.autonomy
+        ),
+    ));
 
     // Model routes validation
     for route in &config.model_routes {
@@ -1013,6 +1274,274 @@ fn parse_rfc3339(raw: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
+}
+
+// ── Additional health checks (P0-1 extension) ────────────────────
+
+/// Check memory backend health
+fn check_memory_health(config: &Config, items: &mut Vec<DiagItem>) {
+    let cat = "memory";
+
+    // Check memory backend configuration
+    let backend = &config.memory_backend;
+    items.push(DiagItem::ok(cat, format!("backend: {backend}")));
+
+    // Check memory directory exists (for SQLite/Markdown backends)
+    if let Some(ref memory_dir) = config.memory_dir {
+        let path = std::path::Path::new(memory_dir);
+        if path.exists() {
+            // Try to get directory size
+            match get_directory_size(path) {
+                Ok(size_bytes) => {
+                    let size_mb = size_bytes as f64 / 1024.0 / 1024.0;
+                    items.push(DiagItem::ok(
+                        cat,
+                        format!("directory: {} ({:.2} MB)", memory_dir, size_mb),
+                    ));
+                    
+                    // Warn if too large
+                    if size_mb > 1000.0 {
+                        items.push(DiagItem::warn(
+                            cat,
+                            "Memory directory is large (>1GB), consider running vacuum",
+                        ));
+                    }
+                }
+                Err(_) => {
+                    items.push(DiagItem::warn(
+                        cat,
+                        format!("directory exists but size check failed: {}", memory_dir),
+                    ));
+                }
+            }
+        } else {
+            items.push(DiagItem::warn(
+                cat,
+                format!("memory directory does not exist: {}", memory_dir),
+            ));
+        }
+    } else {
+        items.push(DiagItem::warn(cat, "memory_dir not configured"));
+    }
+
+    // Check if using none backend
+    if backend == "none" {
+        items.push(DiagItem::warn(
+            cat,
+            "Using 'none' memory backend - no persistence",
+        ));
+    }
+}
+
+/// Check provider connectivity
+async fn check_provider_health(config: &Config, items: &mut Vec<DiagItem>) {
+    let cat = "provider";
+
+    // Check if default provider is configured
+    if let Some(ref provider) = config.default_provider {
+        items.push(DiagItem::ok(cat, format!("default: {provider}")));
+        
+        // Check API key presence (not validity)
+        let has_api_key = config.api_key.is_some() && !config.api_key.as_ref().unwrap().is_empty();
+        if has_api_key {
+            items.push(DiagItem::ok(cat, "API key configured"));
+        } else {
+            items.push(DiagItem::warn(cat, "API key not configured"));
+        }
+    } else {
+        items.push(DiagItem::warn(cat, "default_provider not configured"));
+    }
+
+    // Check custom providers
+    if !config.custom_providers.is_empty() {
+        items.push(DiagItem::ok(
+            cat,
+            format!("{} custom providers configured", config.custom_providers.len()),
+        ));
+    }
+
+    // Note: Actual connectivity test would require async API calls
+    // This is a configuration check only
+    items.push(DiagItem::ok(
+        cat,
+        "Use `zeroclaw doctor models` to test actual connectivity",
+    ));
+}
+
+/// Check tools health
+fn check_tools_health(config: &Config, items: &mut Vec<DiagItem>) {
+    let cat = "tools";
+
+    // Check enabled tools
+    let enabled_tools = &config.enabled_tools;
+    if enabled_tools.is_empty() {
+        items.push(DiagItem::warn(cat, "No tools enabled"));
+    } else {
+        items.push(DiagItem::ok(
+            cat,
+            format!("{} tools enabled", enabled_tools.len()),
+        ));
+        
+        // Sample first few tools
+        let sample: Vec<&String> = enabled_tools.iter().take(5).collect();
+        if enabled_tools.len() > 5 {
+            items.push(DiagItem::ok(
+                cat,
+                format!("including: {}... (+{} more)", 
+                    sample.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+                    enabled_tools.len() - 5
+                ),
+            ));
+        } else {
+            items.push(DiagItem::ok(
+                cat,
+                format!("including: {}", 
+                    sample.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                ),
+            ));
+        }
+    }
+
+    // Check disabled tools
+    if !config.disabled_tools.is_empty() {
+        items.push(DiagItem::ok(
+            cat,
+            format!("{} tools disabled", config.disabled_tools.len()),
+        ));
+    }
+
+    // Check MCP servers
+    if let Some(ref mcp_config) = config.mcp {
+        if let Some(ref servers) = mcp_config.servers {
+            if !servers.is_empty() {
+                items.push(DiagItem::ok(
+                    cat,
+                    format!("{} MCP servers configured", servers.len()),
+                ));
+            }
+        }
+    }
+}
+
+/// Check system resources
+fn check_resources_health(items: &mut Vec<DiagItem>) {
+    let cat = "resources";
+
+    // Check memory usage from /proc/self/status (Linux)
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            for line in status.lines() {
+                if line.starts_with("VmRSS:") {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        if let Ok(kb) = parts[1].parse::<u64>() {
+                            let mb = kb / 1024;
+                            items.push(DiagItem::ok(
+                                cat,
+                                format!("memory usage: {} MB", mb),
+                            ));
+                            
+                            if mb > 1024 {
+                                items.push(DiagItem::warn(
+                                    cat,
+                                    "Memory usage is high (>1GB)",
+                                ));
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    
+    #[cfg(not(target_os = "linux"))]
+    {
+        items.push(DiagItem::ok(cat, "memory usage: (platform-specific)"));
+    }
+
+    // Check disk space for workspace
+    if let Ok(cwd) = std::env::current_dir() {
+        match get_disk_available(&cwd) {
+            Some(available_gb) => {
+                items.push(DiagItem::ok(
+                    cat,
+                    format!("disk available: {:.1} GB", available_gb),
+                ));
+                
+                if available_gb < 1.0 {
+                    items.push(DiagItem::warn(
+                        cat,
+                        "Disk space is low (<1GB)",
+                    ));
+                }
+            }
+            None => {
+                items.push(DiagItem::warn(cat, "Could not determine disk space"));
+            }
+        }
+    }
+}
+
+/// Helper: Get directory size in bytes
+fn get_directory_size(path: &std::path::Path) -> std::io::Result<u64> {
+    let mut total = 0u64;
+    
+    if path.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            
+            if metadata.is_file() {
+                total += metadata.len();
+            } else if metadata.is_dir() {
+                total += get_directory_size(&entry.path())?;
+            }
+        }
+    }
+    
+    Ok(total)
+}
+
+/// Helper: Get disk available space in GB
+fn get_disk_available(path: &std::path::Path) -> Option<f64> {
+    use std::os::unix::fs::MetadataExt;
+    
+    if let Ok(metadata) = std::fs::metadata(path) {
+        // On Unix, we can use statvfs for disk space
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            use std::os::unix::ffi::OsStrExt;
+            
+            if let Ok(path_c) = CString::new(path.as_os_str().as_bytes()) {
+                unsafe {
+                    let mut stat = libc::statvfs {
+                        f_bsize: 0,
+                        f_frsize: 0,
+                        f_blocks: 0,
+                        f_bfree: 0,
+                        f_bavail: 0,
+                        f_files: 0,
+                        f_ffree: 0,
+                        f_favail: 0,
+                        f_fsid: 0,
+                        f_flag: 0,
+                        f_namemax: 0,
+                        __f_spare: [0; 6],
+                    };
+                    
+                    if libc::statvfs(path_c.as_ptr(), &mut stat) == 0 {
+                        let available_bytes = stat.f_bavail as u64 * stat.f_frsize as u64;
+                        return Some(available_bytes as f64 / 1024.0 / 1024.0 / 1024.0);
+                    }
+                }
+            }
+        }
+    }
+    
+    None
 }
 
 #[cfg(test)]

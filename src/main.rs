@@ -85,6 +85,7 @@ mod cost;
 mod cron;
 mod daemon;
 mod doctor;
+mod status;
 mod gateway;
 mod hardware;
 mod health;
@@ -326,6 +327,22 @@ Examples:
         /// Output format: "exit-code" exits 0 if healthy, 1 otherwise (for Docker HEALTHCHECK)
         #[arg(long)]
         format: Option<String>,
+        
+        /// Output format: human, json, brief
+        #[arg(long, default_value = "human")]
+        output: String,
+        
+        /// Watch mode: continuously update status
+        #[arg(long)]
+        watch: bool,
+        
+        /// Watch interval in seconds
+        #[arg(long, default_value = "5")]
+        interval: u64,
+        
+        /// Output to file
+        #[arg(long)]
+        output_file: Option<String>,
     },
 
     /// Engage, inspect, and resume emergency-stop states.
@@ -789,6 +806,62 @@ enum DoctorCommands {
         #[arg(long, default_value = "20")]
         limit: usize,
     },
+    /// Run full health check with extended diagnostics
+    Full {
+        /// Output format: human, json
+        #[arg(long, default_value = "human")]
+        format: String,
+
+        /// Output to file instead of stdout
+        #[arg(long)]
+        output: Option<String>,
+
+        /// Verbose output with additional details
+        #[arg(long)]
+        verbose: bool,
+
+        /// Automatically fix fixable issues
+        #[arg(long)]
+        fix: bool,
+    },
+    /// Failure registry operations (P0-4)
+    Failures {
+        /// Action: list | resolve | recover
+        #[arg(long, default_value = "list")]
+        action: String,
+
+        /// Output format: human | json
+        #[arg(long, default_value = "human")]
+        format: String,
+
+        /// Failure id for resolve
+        #[arg(long)]
+        id: Option<String>,
+
+        /// Filter by kind: provider|compact|session|channel|memory|config|tool|resource|unknown
+        #[arg(long)]
+        kind: Option<String>,
+
+        /// Filter by minimum severity: low|medium|high|critical
+        #[arg(long)]
+        min_severity: Option<String>,
+
+        /// Only unresolved records
+        #[arg(long)]
+        unresolved_only: bool,
+
+        /// Max rows
+        #[arg(long, default_value = "20")]
+        limit: usize,
+
+        /// Resolution text when resolve
+        #[arg(long)]
+        resolution: Option<String>,
+
+        /// Recovery dry-run (for --action recover)
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1000,7 +1073,11 @@ async fn main() -> Result<()> {
     }
 
     // All other commands need config loaded first
+    // P1-3 layered config loading: user -> project -> local -> env
     let mut config = Box::pin(Config::load_or_init()).await?;
+    if let Ok(layered) = config::layered::load_layered_or_init(&config.workspace_dir).await {
+        config = layered;
+    }
     config.apply_env_overrides();
     observability::runtime_trace::init_from_config(&config.observability, &config.workspace_dir);
     if config.security.otp.enabled {
@@ -1181,7 +1258,13 @@ async fn main() -> Result<()> {
             Box::pin(daemon::run(config, host, port)).await
         }
 
-        Commands::Status { format } => {
+        Commands::Status {
+            format,
+            output,
+            watch,
+            interval,
+            output_file,
+        } => {
             if format.as_deref() == Some("exit-code") {
                 // Lightweight health probe for Docker HEALTHCHECK
                 let port = config.gateway.port;
@@ -1205,132 +1288,14 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            println!("🦀 ZeroClaw Status");
-            println!();
-            println!("Version:     {}", env!("CARGO_PKG_VERSION"));
-            println!("Workspace:   {}", config.workspace_dir.display());
-            println!("Config:      {}", config.config_path.display());
-            println!();
-            println!(
-                "🤖 Provider:      {}",
-                config.default_provider.as_deref().unwrap_or("openrouter")
-            );
-            println!(
-                "   Model:         {}",
-                config.default_model.as_deref().unwrap_or("(default)")
-            );
-            println!("📊 Observability:  {}", config.observability.backend);
-            println!(
-                "🧾 Trace storage:  {} ({})",
-                config.observability.runtime_trace_mode, config.observability.runtime_trace_path
-            );
-            println!("🛡️  Autonomy:      {:?}", config.autonomy.level);
-            println!("⚙️  Runtime:       {}", config.runtime.kind);
-            if service::is_running() {
-                println!("🟢 Service:       running");
+            
+            // P0-2: Enhanced status reporting
+            if watch {
+                status::run_watch(&config, &output, interval, output_file.as_deref()).await
             } else {
-                println!("🔴 Service:       stopped");
+                status::run_status(&config, &output, output_file.as_deref())
             }
-            let effective_memory_backend = memory::effective_memory_backend_name(
-                &config.memory.backend,
-                Some(&config.storage.provider.config),
-            );
-            println!(
-                "💓 Heartbeat:      {}",
-                if config.heartbeat.enabled {
-                    format!("every {}min", config.heartbeat.interval_minutes)
-                } else {
-                    "disabled".into()
-                }
-            );
-            println!(
-                "🧠 Memory:         {} (auto-save: {})",
-                effective_memory_backend,
-                if config.memory.auto_save { "on" } else { "off" }
-            );
-
-            println!();
-            println!("Security:");
-            println!("  Workspace only:    {}", config.autonomy.workspace_only);
-            println!(
-                "  Allowed roots:     {}",
-                if config.autonomy.allowed_roots.is_empty() {
-                    "(none)".to_string()
-                } else {
-                    config.autonomy.allowed_roots.join(", ")
-                }
-            );
-            println!(
-                "  Allowed commands:  {}",
-                config.autonomy.allowed_commands.join(", ")
-            );
-            println!(
-                "  Max actions/hour:  {}",
-                config.autonomy.max_actions_per_hour
-            );
-            println!(
-                "  Cost tracking:     {}",
-                if config.cost.enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
-            );
-            println!("  Max cost/day:      ${:.2}", config.cost.daily_limit_usd);
-            println!("  Max cost/month:    ${:.2}", config.cost.monthly_limit_usd);
-            if config.cost.enabled {
-                match cost::CostTracker::new(config.cost.clone(), &config.workspace_dir) {
-                    Ok(tracker) => match tracker.get_summary() {
-                        Ok(summary) => {
-                            println!(
-                                "  Spent today:       ${:.4} / ${:.2}",
-                                summary.daily_cost_usd, config.cost.daily_limit_usd
-                            );
-                            println!(
-                                "  Spent this month:  ${:.4} / ${:.2}",
-                                summary.monthly_cost_usd, config.cost.monthly_limit_usd
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("  ⚠ Could not load cost usage: {e}");
-                        }
-                    },
-                    Err(e) => {
-                        eprintln!("  ⚠ Could not init cost tracker: {e}");
-                    }
-                }
-            }
-            println!("  OTP enabled:       {}", config.security.otp.enabled);
-            println!("  E-stop enabled:    {}", config.security.estop.enabled);
-            println!();
-            println!("Channels:");
-            println!("  CLI:      ✅ always");
-            for (channel, configured) in config.channels_config.channels() {
-                println!(
-                    "  {:9} {}",
-                    channel.name(),
-                    if configured {
-                        "✅ configured"
-                    } else {
-                        "❌ not configured"
-                    }
-                );
-            }
-            println!();
-            println!("Peripherals:");
-            println!(
-                "  Enabled:   {}",
-                if config.peripherals.enabled {
-                    "yes"
-                } else {
-                    "no"
-                }
-            );
-            println!("  Boards:    {}", config.peripherals.boards.len());
-
-            Ok(())
-        }
-
+        },
         Commands::Estop {
             estop_command,
             level,
@@ -1422,6 +1387,158 @@ async fn main() -> Result<()> {
                 contains.as_deref(),
                 limit,
             ),
+            Some(DoctorCommands::Full {
+                format,
+                output,
+                verbose,
+                fix,
+            }) => {
+                // Handle full diagnostic with options
+                if fix {
+                    doctor::run_with_fix(&config, verbose).await
+                } else if format == "json" {
+                    doctor::run_json(&config, verbose, output.as_deref())
+                } else {
+                    doctor::run_full(&config, verbose, output.as_deref())
+                }
+            }
+            Some(DoctorCommands::Failures {
+                action,
+                format,
+                id,
+                kind,
+                min_severity,
+                unresolved_only,
+                limit,
+                resolution,
+                dry_run,
+            }) => {
+                use crate::health::failure::{
+                    list_failures, recovery_hint, resolve_failure, FailureFilter, FailureKind,
+                    FailureSeverity,
+                };
+                use crate::health::recovery::recover_failure_by_id;
+                use std::str::FromStr;
+
+                let as_json = format == "json";
+
+                if action == "resolve" {
+                    let mut ok = false;
+                    let mut message = String::new();
+                    if let Some(fid) = id.as_deref() {
+                        if resolve_failure(fid, resolution.clone()) {
+                            ok = true;
+                            message = format!("resolved: {fid}");
+                        } else {
+                            message = format!("failure not found: {fid}");
+                        }
+                    } else {
+                        message = "--id is required when --action resolve".to_string();
+                    }
+
+                    if as_json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "action": "resolve",
+                                "ok": ok,
+                                "message": message,
+                            })
+                        );
+                    } else if ok {
+                        println!("✅ {message}");
+                    } else {
+                        println!("❌ {message}");
+                    }
+                    Ok(())
+                } else if action == "recover" {
+                    if let Some(fid) = id.as_deref() {
+                        match recover_failure_by_id(&config, fid, dry_run) {
+                            Ok(report) => {
+                                if as_json {
+                                    println!("{}", serde_json::to_string_pretty(&report)?);
+                                } else {
+                                    println!(
+                                        "Recovery {} for {} ({:?})",
+                                        if report.success { "succeeded" } else { "failed" },
+                                        report.failure_id,
+                                        report.kind
+                                    );
+                                    for step in report.steps {
+                                        println!(
+                                            "- {:?}: {} | {}",
+                                            step.action,
+                                            if step.ok { "ok" } else { "failed" },
+                                            step.message
+                                        );
+                                    }
+                                }
+                                if !report.success {
+                                    std::process::exit(2);
+                                }
+                            }
+                            Err(e) => {
+                                if as_json {
+                                    println!(
+                                        "{}",
+                                        serde_json::json!({
+                                            "action": "recover",
+                                            "ok": false,
+                                            "error": e.to_string(),
+                                        })
+                                    );
+                                } else {
+                                    println!("❌ recovery error: {e}");
+                                }
+                                std::process::exit(2);
+                            }
+                        }
+                    } else {
+                        if as_json {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "action": "recover",
+                                    "ok": false,
+                                    "error": "--id is required when --action recover",
+                                })
+                            );
+                        } else {
+                            println!("❌ --id is required when --action recover");
+                        }
+                        std::process::exit(2);
+                    }
+                    Ok(())
+                } else {
+                    let filter = FailureFilter {
+                        kind: kind
+                            .as_deref()
+                            .and_then(|k| FailureKind::from_str(k).ok()),
+                        min_severity: min_severity
+                            .as_deref()
+                            .and_then(|s| FailureSeverity::from_str(s).ok()),
+                        unresolved_only,
+                        limit,
+                    };
+                    let rows = list_failures(&filter);
+                    if as_json {
+                        println!("{}", serde_json::to_string_pretty(&rows)?);
+                    } else if rows.is_empty() {
+                        println!("No failure records matched.");
+                    } else {
+                        println!("Failure records: {}", rows.len());
+                        for r in rows {
+                            println!(
+                                "- {} | {:?} | {:?} | resolved={} | occurrences={}",
+                                r.id, r.kind, r.severity, r.resolved, r.occurrences
+                            );
+                            println!("  msg: {}", r.message);
+                            println!("  hint: {}", recovery_hint(r.kind));
+                        }
+                    }
+                    Ok(())
+                }
+            }
             None => doctor::run(&config),
         },
 

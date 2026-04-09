@@ -145,7 +145,16 @@ impl Tool for ShellTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        match self.security.validate_command_execution(command, approved) {
+        let eval_ctx = crate::security::EvaluationContext {
+            tool_name: Some("shell".to_string()),
+            sender_id: None,
+            channel: None,
+        };
+
+        match self
+            .security
+            .validate_command_execution_with_context(command, approved, &eval_ctx)
+        {
             Ok(_) => {}
             Err(reason) => {
                 return Ok(ToolResult {

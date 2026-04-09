@@ -110,7 +110,15 @@ impl Tool for SkillShellTool {
 
         // Security validation — always requires explicit approval (approved=true)
         // since skill tools are user-defined and should be treated as medium-risk.
-        match self.security.validate_command_execution(&command, true) {
+        let eval_ctx = crate::security::EvaluationContext {
+            tool_name: Some("skill_tool".to_string()),
+            sender_id: None,
+            channel: None,
+        };
+        match self
+            .security
+            .validate_command_execution_with_context(&command, true, &eval_ctx)
+        {
             Ok(_) => {}
             Err(reason) => {
                 return Ok(ToolResult {

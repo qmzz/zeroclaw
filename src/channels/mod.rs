@@ -122,6 +122,7 @@ use crate::runtime;
 use crate::security::{AutonomyLevel, SecurityPolicy};
 use crate::tools::{self, Tool};
 use crate::util::truncate_with_ellipsis;
+use crate::agent::deterministic_compactor::{compact_memory_entries, CompressionBudget};
 use anyhow::{Context, Result};
 use portable_atomic::{AtomicU64, Ordering};
 use serde::Deserialize;
@@ -1870,43 +1871,43 @@ async fn build_memory_context(
     let mut context = String::new();
 
     if let Ok(entries) = mem.recall(user_msg, 5, session_id, None, None).await {
-        let mut included = 0usize;
-        let mut used_chars = 0usize;
+        let filtered: Vec<_> = entries
+            .into_iter()
+            .filter(|e| match e.score {
+                Some(score) => score >= min_relevance_score,
+                None => true, // keep entries without a score (e.g. non-vector backends)
+            })
+            .filter(|e| !should_skip_memory_context_entry(&e.key, &e.content))
+            .collect();
 
-        for entry in entries.iter().filter(|e| match e.score {
-            Some(score) => score >= min_relevance_score,
-            None => true, // keep entries without a score (e.g. non-vector backends)
-        }) {
-            if included >= MEMORY_CONTEXT_MAX_ENTRIES {
-                break;
+        let compacted = compact_memory_entries(
+            &filtered,
+            CompressionBudget {
+                max_chars: MEMORY_CONTEXT_MAX_CHARS,
+                max_entries: MEMORY_CONTEXT_MAX_ENTRIES,
+                max_entry_chars: MEMORY_CONTEXT_ENTRY_MAX_CHARS,
+            },
+        );
+
+        if !compacted.lines.is_empty() {
+            context.push_str("[Memory context]\n");
+            for line in &compacted.lines {
+                let rendered = format!("- {}: {}\n", line.key, line.content);
+                context.push_str(&rendered);
             }
 
-            if should_skip_memory_context_entry(&entry.key, &entry.content) {
-                continue;
+            if compacted.stats.removed_duplicates > 0
+                || compacted.stats.truncated_entries > 0
+                || compacted.stats.omitted_entries > 0
+            {
+                context.push_str(&format!(
+                    "- _compaction: removed_duplicates={}, truncated={}, omitted={}\n",
+                    compacted.stats.removed_duplicates,
+                    compacted.stats.truncated_entries,
+                    compacted.stats.omitted_entries
+                ));
             }
 
-            let content = if entry.content.chars().count() > MEMORY_CONTEXT_ENTRY_MAX_CHARS {
-                truncate_with_ellipsis(&entry.content, MEMORY_CONTEXT_ENTRY_MAX_CHARS)
-            } else {
-                entry.content.clone()
-            };
-
-            let line = format!("- {}: {}\n", entry.key, content);
-            let line_chars = line.chars().count();
-            if used_chars + line_chars > MEMORY_CONTEXT_MAX_CHARS {
-                break;
-            }
-
-            if included == 0 {
-                context.push_str("[Memory context]\n");
-            }
-
-            context.push_str(&line);
-            used_chars += line_chars;
-            included += 1;
-        }
-
-        if included > 0 {
             context.push_str("[/Memory context]\n\n");
         }
     }
