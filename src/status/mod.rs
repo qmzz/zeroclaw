@@ -3,9 +3,9 @@
 //! Provides enhanced status reporting with multiple output formats and watch mode.
 
 use crate::config::Config;
+use crate::memory;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use std::io::Write;
 
 /// Status report structure
 #[derive(Debug, Clone, serde::Serialize)]
@@ -144,6 +144,7 @@ fn generate_status_report(config: &Config) -> StatusReport {
         channels: ChannelStatus {
             cli: true,
             configured_channels: config.channels_config.channels()
+                .into_iter()
                 .filter(|(_, configured)| *configured)
                 .map(|(channel, _)| channel.name().to_string())
                 .collect(),
@@ -269,20 +270,7 @@ fn get_disk_available() -> Option<f64> {
             
             if let Ok(path_c) = CString::new(cwd.as_os_str().as_bytes()) {
                 unsafe {
-                    let mut stat = libc::statvfs {
-                        f_bsize: 0,
-                        f_frsize: 0,
-                        f_blocks: 0,
-                        f_bfree: 0,
-                        f_bavail: 0,
-                        f_files: 0,
-                        f_ffree: 0,
-                        f_favail: 0,
-                        f_fsid: 0,
-                        f_flag: 0,
-                        f_namemax: 0,
-                        __f_spare: [0; 6],
-                    };
+                    let mut stat: libc::statvfs = std::mem::zeroed();
                     
                     if libc::statvfs(path_c.as_ptr(), &mut stat) == 0 {
                         let available_bytes = stat.f_bavail as u64 * stat.f_frsize as u64;

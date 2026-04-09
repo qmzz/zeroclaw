@@ -68,7 +68,7 @@ pub use secrets::SecretStore;
 pub use traits::{NoopSandbox, Sandbox};
 // Nevis IAM integration
 #[allow(unused_imports)]
-pub use iam_policy::{IamPolicy, PolicyDecision};
+pub use iam_policy::IamPolicy;
 #[allow(unused_imports)]
 pub use nevis::{NevisAuthProvider, NevisIdentity};
 // Prompt injection defense exports

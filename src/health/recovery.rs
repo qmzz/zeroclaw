@@ -6,7 +6,7 @@ use crate::config::Config;
 
 use super::failure::{get_failure, resolve_failure, FailureKind};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryAction {
     EnsureMemoryDir,
@@ -188,22 +188,12 @@ mod tests {
 
     fn test_config() -> Config {
         let temp_dir = TempDir::new().unwrap();
-        Config {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            config_path: temp_dir.path().join("config.toml"),
-            default_provider: Some("anthropic".to_string()),
-            default_model: Some("claude-sonnet".to_string()),
-            autonomy: crate::autonomy::AutonomyConfig::default(),
-            observability: crate::observability::ObservabilityConfig::default(),
-            memory: crate::memory::MemoryConfig::default(),
-            storage: crate::storage::StorageConfig::default(),
-            channels_config: crate::channels::ChannelsConfig::default(),
-            runtime: crate::runtime::RuntimeConfig::default(),
-            tunnel: crate::tunnel::TunnelConfig::default(),
-            skills: crate::skills::SkillsConfig::default(),
-            cron: crate::cron::CronConfig::default(),
-            security: crate::security::SecurityConfig::default(),
-        }
+        let mut config = Config::default();
+        config.workspace_dir = temp_dir.path().to_path_buf();
+        config.config_path = temp_dir.path().join("config.toml");
+        config.default_provider = Some("anthropic".to_string());
+        config.default_model = Some("claude-sonnet".to_string());
+        config
     }
 
     #[test]

@@ -1411,15 +1411,12 @@ fn check_tools_health(config: &Config, items: &mut Vec<DiagItem>) {
     }
 
     // Check MCP servers
-    if let Some(ref mcp_config) = config.mcp {
-        if let Some(ref servers) = mcp_config.servers {
-            if !servers.is_empty() {
-                items.push(DiagItem::ok(
-                    cat,
-                    format!("{} MCP servers configured", servers.len()),
-                ));
-            }
-        }
+    let mcp_config = &config.mcp;
+    if !mcp_config.servers.is_empty() {
+        items.push(DiagItem::ok(
+            cat,
+            format!("{} MCP servers configured", mcp_config.servers.len()),
+        ));
     }
 }
 
@@ -1517,20 +1514,7 @@ fn get_disk_available(path: &std::path::Path) -> Option<f64> {
             
             if let Ok(path_c) = CString::new(path.as_os_str().as_bytes()) {
                 unsafe {
-                    let mut stat = libc::statvfs {
-                        f_bsize: 0,
-                        f_frsize: 0,
-                        f_blocks: 0,
-                        f_bfree: 0,
-                        f_bavail: 0,
-                        f_files: 0,
-                        f_ffree: 0,
-                        f_favail: 0,
-                        f_fsid: 0,
-                        f_flag: 0,
-                        f_namemax: 0,
-                        __f_spare: [0; 6],
-                    };
+                    let mut stat: libc::statvfs = std::mem::zeroed();
                     
                     if libc::statvfs(path_c.as_ptr(), &mut stat) == 0 {
                         let available_bytes = stat.f_bavail as u64 * stat.f_frsize as u64;

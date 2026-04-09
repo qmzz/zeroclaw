@@ -218,6 +218,26 @@ pub struct Config {
     #[serde(default)]
     pub memory: MemoryConfig,
 
+    /// Custom provider configurations for doctor diagnostics.
+    #[serde(default)]
+    pub custom_providers: Vec<CustomProvider>,
+
+    /// Memory directory path (for doctor diagnostics).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_dir: Option<String>,
+
+    /// Memory backend name (for doctor diagnostics).
+    #[serde(default)]
+    pub memory_backend: String,
+
+    /// Enabled tools list (for doctor diagnostics).
+    #[serde(default)]
+    pub enabled_tools: Vec<String>,
+
+    /// Disabled tools list (for doctor diagnostics).
+    #[serde(default)]
+    pub disabled_tools: Vec<String>,
+
     /// Persistent storage provider configuration (`[storage]`).
     #[serde(default)]
     pub storage: StorageConfig,
@@ -937,6 +957,20 @@ pub struct McpServerConfig {
     /// Optional per-call timeout in seconds (hard capped in validation).
     #[serde(default)]
     pub tool_timeout_secs: Option<u64>,
+}
+
+/// Custom provider configuration for doctor diagnostics.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(default)]
+pub struct CustomProvider {
+    /// Provider ID.
+    pub id: String,
+    /// Provider name.
+    pub name: Option<String>,
+    /// API base URL.
+    pub api_base: Option<String>,
+    /// API key reference.
+    pub api_key: Option<String>,
 }
 
 /// External MCP client configuration (`[mcp]` section).
@@ -8431,6 +8465,11 @@ impl Default for Config {
             transcription: TranscriptionConfig::default(),
             tts: TtsConfig::default(),
             mcp: McpConfig::default(),
+            custom_providers: Vec::new(),
+            memory_dir: None,
+            memory_backend: String::new(),
+            enabled_tools: Vec::new(),
+            disabled_tools: Vec::new(),
             nodes: NodesConfig::default(),
             workspace: WorkspaceConfig::default(),
             notion: NotionConfig::default(),
@@ -11639,6 +11678,11 @@ auto_save = true
             transcription: TranscriptionConfig::default(),
             tts: TtsConfig::default(),
             mcp: McpConfig::default(),
+            custom_providers: Vec::new(),
+            memory_dir: None,
+            memory_backend: String::new(),
+            enabled_tools: Vec::new(),
+            disabled_tools: Vec::new(),
             nodes: NodesConfig::default(),
             workspace: WorkspaceConfig::default(),
             notion: NotionConfig::default(),
@@ -12169,6 +12213,11 @@ default_temperature = 0.7
             transcription: TranscriptionConfig::default(),
             tts: TtsConfig::default(),
             mcp: McpConfig::default(),
+            custom_providers: Vec::new(),
+            memory_dir: None,
+            memory_backend: String::new(),
+            enabled_tools: Vec::new(),
+            disabled_tools: Vec::new(),
             nodes: NodesConfig::default(),
             workspace: WorkspaceConfig::default(),
             notion: NotionConfig::default(),
