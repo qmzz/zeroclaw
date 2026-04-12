@@ -1075,7 +1075,7 @@ async fn main() -> Result<()> {
     // All other commands need config loaded first
     // P1-3 layered config loading: user -> project -> local -> env
     let mut config = Box::pin(Config::load_or_init()).await?;
-    if let Ok(layered) = config::layered::load_layered_or_init(&config.workspace_dir).await {
+    if let Ok(layered) = config::layered::apply_layered_files(config.clone()).await {
         config = layered;
     }
     config.apply_env_overrides();
@@ -1424,7 +1424,7 @@ async fn main() -> Result<()> {
 
                 if action == "resolve" {
                     let mut ok = false;
-                    let mut message = String::new();
+                    let message;
                     if let Some(fid) = id.as_deref() {
                         if resolve_failure(fid, resolution.clone()) {
                             ok = true;

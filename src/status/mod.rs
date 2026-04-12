@@ -143,7 +143,9 @@ fn generate_status_report(config: &Config) -> StatusReport {
         },
         channels: ChannelStatus {
             cli: true,
-            configured_channels: config.channels_config.channels()
+            configured_channels: config
+                .channels_config
+                .channels()
                 .into_iter()
                 .filter(|(_, configured)| *configured)
                 .map(|(channel, _)| channel.name().to_string())
@@ -271,7 +273,7 @@ fn get_disk_available() -> Option<f64> {
             if let Ok(path_c) = CString::new(cwd.as_os_str().as_bytes()) {
                 unsafe {
                     let mut stat: libc::statvfs = std::mem::zeroed();
-                    
+
                     if libc::statvfs(path_c.as_ptr(), &mut stat) == 0 {
                         let available_bytes = stat.f_bavail as u64 * stat.f_frsize as u64;
                         return Some(available_bytes as f64 / 1024.0 / 1024.0 / 1024.0);

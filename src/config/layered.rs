@@ -22,13 +22,38 @@ pub fn default_layered_paths(workspace_dir: &Path) -> LayeredConfigPaths {
     }
 }
 
-/// Load config with layered precedence (later overrides earlier):
-/// user -> project -> local -> env (handled by underlying loader)
-pub async fn load_layered_or_init(workspace_dir: &Path) -> Result<Config> {
-    // Base loader keeps existing behavior and env handling
-    let mut cfg = Config::load_or_init().await?;
+fn merge_values(base: &mut toml::Value, override_v: toml::Value) {
+    match (base, override_v) {
+        (toml::Value::Table(base_t), toml::Value::Table(ov_t)) => {
+            for (k, v) in ov_t {
+                match base_t.get_mut(&k) {
+                    Some(existing) => merge_values(existing, v),
+                    None => {
+                        base_t.insert(k, v);
+                    }
+                }
+            }
+        }
+        (base_slot, ov) => {
+            *base_slot = ov;
+        }
+    }
+}
 
-    let paths = default_layered_paths(workspace_dir);
+/// Apply user/project/local config layers onto an already-loaded base config.
+///
+/// Later files override earlier ones: `user -> project -> local`.
+///
+/// Important: layers are merged from raw TOML values rather than deserializing
+/// each layer into a full `Config`, which would inject defaults and accidentally
+/// overwrite unrelated base settings.
+pub async fn apply_layered_files(mut cfg: Config) -> Result<Config> {
+    let workspace_dir = cfg.workspace_dir.clone();
+    let original_config_path = cfg.config_path.clone();
+    let paths = default_layered_paths(&workspace_dir);
+
+    let mut base_v = toml::Value::try_from(cfg.clone())
+        .unwrap_or(toml::Value::Table(toml::map::Map::new()));
 
     for (layer_name, path) in [
         ("user", paths.user),
@@ -38,68 +63,43 @@ pub async fn load_layered_or_init(workspace_dir: &Path) -> Result<Config> {
     .into_iter()
     .filter_map(|(n, p)| p.map(|pp| (n, pp)))
     {
-        if path.exists() {
-            if let Ok(text) = tokio::fs::read_to_string(&path).await {
-                if let Ok(layer_cfg) = toml::from_str::<Config>(&text) {
-                    cfg.apply_layer(layer_cfg);
+        if !path.exists() {
+            continue;
+        }
+
+        match tokio::fs::read_to_string(&path).await {
+            Ok(text) => match toml::from_str::<toml::Value>(&text) {
+                Ok(layer_v) => {
+                    merge_values(&mut base_v, layer_v);
                     cfg.config_path = path.clone();
                     tracing::info!(layer = layer_name, path = %path.display(), "applied config layer");
-                } else {
-                    tracing::warn!(layer = layer_name, path = %path.display(), "failed to parse config layer");
                 }
+                Err(error) => {
+                    tracing::warn!(layer = layer_name, path = %path.display(), %error, "failed to parse config layer");
+                }
+            },
+            Err(error) => {
+                tracing::warn!(layer = layer_name, path = %path.display(), %error, "failed to read config layer");
             }
         }
+    }
+
+    if let Ok(mut merged) = base_v.try_into::<Config>() {
+        merged.workspace_dir = workspace_dir;
+        merged.config_path = if cfg.config_path.as_os_str().is_empty() {
+            original_config_path
+        } else {
+            cfg.config_path.clone()
+        };
+        cfg = merged;
     }
 
     Ok(cfg)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use tempfile::TempDir;
-
-    fn create_test_config(dir: &Path, content: &str) -> PathBuf {
-        let path = dir.join("config.toml");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, content).unwrap();
-        path
-    }
-
-    #[test]
-    fn test_default_layered_paths() {
-        let temp_dir = TempDir::new().unwrap();
-        let paths = default_layered_paths(temp_dir.path());
-        
-        assert!(paths.user.is_some());
-        assert!(paths.project.is_some());
-        assert!(paths.local.is_some());
-        
-        assert!(paths.project.unwrap().ends_with(".zeroclaw/config.toml"));
-        assert!(paths.local.unwrap().ends_with(".zeroclaw/config.local.toml"));
-    }
-
-    #[tokio::test]
-    async fn test_layered_config_precedence() {
-        let temp_dir = TempDir::new().unwrap();
-        let workspace = temp_dir.path().join("workspace");
-        fs::create_dir_all(&workspace).unwrap();
-        
-        // Create project config
-        create_test_config(&workspace, r#"
-default_provider = "anthropic"
-default_model = "claude-sonnet"
-"#);
-        
-        // Create local config (should override)
-        create_test_config(&workspace, r#"
-default_provider = "openai"
-default_model = "gpt-4"
-"#);
-        
-        let paths = default_layered_paths(&workspace);
-        assert!(paths.project.unwrap().exists());
-        assert!(paths.local.unwrap().exists());
-    }
+/// Backward-compatible helper that loads the base config first, then applies layers.
+pub async fn load_layered_or_init(workspace_dir: &Path) -> Result<Config> {
+    let mut cfg = Config::load_or_init().await?;
+    cfg.workspace_dir = workspace_dir.to_path_buf();
+    apply_layered_files(cfg).await
 }

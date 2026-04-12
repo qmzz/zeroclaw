@@ -290,7 +290,7 @@ pub fn run_json(config: &Config, verbose: bool, output_file: Option<&str>) -> Re
 }
 
 /// Run diagnostic with auto-fix
-pub async fn run_with_fix(config: &Config, verbose: bool) -> Result<()> {
+pub async fn run_with_fix(config: &Config, _verbose: bool) -> Result<()> {
     println!("🩺 ZeroClaw Doctor - Auto-Fix Mode\n");
     
     let results = diagnose(config);
@@ -341,45 +341,46 @@ pub async fn run_with_fix(config: &Config, verbose: bool) -> Result<()> {
 /// Fix action for auto-fix
 struct FixAction {
     description: &'static str,
-    execute: fn(&Config) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), anyhow::Error>> + Send + '_>>,
+    kind: FixActionKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FixActionKind {
+    CreateMemoryDirectory,
+    ManualEnableTools,
 }
 
 impl FixAction {
     async fn execute(&self, config: &Config) -> Result<()> {
-        (self.execute)(config).await
+        match self.kind {
+            FixActionKind::CreateMemoryDirectory => {
+                let dir = config.workspace_dir.join("memory");
+                std::fs::create_dir_all(&dir)?;
+                Ok(())
+            }
+            FixActionKind::ManualEnableTools => {
+                anyhow::bail!("Manual action required: enable desired tool subsystems in config")
+            }
+        }
     }
 }
 
 /// Get fix action for a specific issue
 fn get_fix_action(message: &str) -> Option<FixAction> {
-    if message.contains("memory directory does not exist") {
+    if message.contains("memory path does not exist yet") || message.contains("memory directory does not exist") {
         return Some(FixAction {
             description: "Create memory directory",
-            execute: |config| {
-                Box::pin(async move {
-                    if let Some(ref dir) = config.memory_dir {
-                        std::fs::create_dir_all(dir)?;
-                        Ok(())
-                    } else {
-                        anyhow::bail!("memory_dir not configured")
-                    }
-                })
-            },
+            kind: FixActionKind::CreateMemoryDirectory,
         });
     }
-    
-    if message.contains("No tools enabled") {
+
+    if message.contains("No optional tool subsystems explicitly enabled") || message.contains("No tools enabled") {
         return Some(FixAction {
-            description: "Enable default tools",
-            execute: |_config| {
-                Box::pin(async move {
-                    // This would require config modification - just inform user
-                    anyhow::bail!("Manual action required: edit config to enable tools")
-                })
-            },
+            description: "Enable desired tool subsystems",
+            kind: FixActionKind::ManualEnableTools,
         });
     }
-    
+
     None
 }
 
@@ -1282,49 +1283,58 @@ fn parse_rfc3339(raw: &str) -> Option<DateTime<Utc>> {
 fn check_memory_health(config: &Config, items: &mut Vec<DiagItem>) {
     let cat = "memory";
 
-    // Check memory backend configuration
-    let backend = &config.memory_backend;
+    let backend = config.memory.backend.as_str();
     items.push(DiagItem::ok(cat, format!("backend: {backend}")));
 
-    // Check memory directory exists (for SQLite/Markdown backends)
-    if let Some(ref memory_dir) = config.memory_dir {
-        let path = std::path::Path::new(memory_dir);
-        if path.exists() {
-            // Try to get directory size
-            match get_directory_size(path) {
+    let path = match backend {
+        "sqlite" => config.workspace_dir.join("memory.db"),
+        "markdown" | "lucid" => config.workspace_dir.join("memory"),
+        _ => config.workspace_dir.join("memory"),
+    };
+
+    if path.exists() {
+        if path.is_dir() {
+            match get_directory_size(&path) {
                 Ok(size_bytes) => {
                     let size_mb = size_bytes as f64 / 1024.0 / 1024.0;
                     items.push(DiagItem::ok(
                         cat,
-                        format!("directory: {} ({:.2} MB)", memory_dir, size_mb),
+                        format!("path: {} ({:.2} MB)", path.display(), size_mb),
                     ));
-                    
-                    // Warn if too large
+
                     if size_mb > 1000.0 {
                         items.push(DiagItem::warn(
                             cat,
-                            "Memory directory is large (>1GB), consider running vacuum",
+                            "Memory directory is large (>1GB), consider running hygiene/vacuum",
                         ));
                     }
                 }
                 Err(_) => {
                     items.push(DiagItem::warn(
                         cat,
-                        format!("directory exists but size check failed: {}", memory_dir),
+                        format!("path exists but size check failed: {}", path.display()),
                     ));
                 }
             }
         } else {
-            items.push(DiagItem::warn(
-                cat,
-                format!("memory directory does not exist: {}", memory_dir),
-            ));
+            match std::fs::metadata(&path) {
+                Ok(meta) => items.push(DiagItem::ok(
+                    cat,
+                    format!("path: {} ({:.2} MB)", path.display(), meta.len() as f64 / 1024.0 / 1024.0),
+                )),
+                Err(_) => items.push(DiagItem::warn(
+                    cat,
+                    format!("path exists but metadata check failed: {}", path.display()),
+                )),
+            }
         }
     } else {
-        items.push(DiagItem::warn(cat, "memory_dir not configured"));
+        items.push(DiagItem::warn(
+            cat,
+            format!("memory path does not exist yet: {}", path.display()),
+        ));
     }
 
-    // Check if using none backend
     if backend == "none" {
         items.push(DiagItem::warn(
             cat,
@@ -1337,12 +1347,10 @@ fn check_memory_health(config: &Config, items: &mut Vec<DiagItem>) {
 async fn check_provider_health(config: &Config, items: &mut Vec<DiagItem>) {
     let cat = "provider";
 
-    // Check if default provider is configured
     if let Some(ref provider) = config.default_provider {
         items.push(DiagItem::ok(cat, format!("default: {provider}")));
-        
-        // Check API key presence (not validity)
-        let has_api_key = config.api_key.is_some() && !config.api_key.as_ref().unwrap().is_empty();
+
+        let has_api_key = config.api_key.as_ref().is_some_and(|k| !k.is_empty());
         if has_api_key {
             items.push(DiagItem::ok(cat, "API key configured"));
         } else {
@@ -1352,16 +1360,13 @@ async fn check_provider_health(config: &Config, items: &mut Vec<DiagItem>) {
         items.push(DiagItem::warn(cat, "default_provider not configured"));
     }
 
-    // Check custom providers
-    if !config.custom_providers.is_empty() {
+    if !config.model_providers.is_empty() {
         items.push(DiagItem::ok(
             cat,
-            format!("{} custom providers configured", config.custom_providers.len()),
+            format!("{} provider profiles configured", config.model_providers.len()),
         ));
     }
 
-    // Note: Actual connectivity test would require async API calls
-    // This is a configuration check only
     items.push(DiagItem::ok(
         cat,
         "Use `zeroclaw doctor models` to test actual connectivity",
@@ -1372,51 +1377,42 @@ async fn check_provider_health(config: &Config, items: &mut Vec<DiagItem>) {
 fn check_tools_health(config: &Config, items: &mut Vec<DiagItem>) {
     let cat = "tools";
 
-    // Check enabled tools
-    let enabled_tools = &config.enabled_tools;
-    if enabled_tools.is_empty() {
-        items.push(DiagItem::warn(cat, "No tools enabled"));
+    let mut configured = Vec::new();
+
+    if config.browser.enabled {
+        configured.push("browser");
+    }
+    if config.web_search.enabled {
+        configured.push("web_search");
+    }
+    if config.mcp.enabled {
+        configured.push("mcp");
+    }
+    if config.skills.open_skills_enabled {
+        configured.push("open_skills");
+    }
+
+    if configured.is_empty() {
+        items.push(DiagItem::warn(
+            cat,
+            "No optional tool subsystems explicitly enabled",
+        ));
     } else {
         items.push(DiagItem::ok(
             cat,
-            format!("{} tools enabled", enabled_tools.len()),
+            format!("enabled subsystems: {}", configured.join(", ")),
         ));
-        
-        // Sample first few tools
-        let sample: Vec<&String> = enabled_tools.iter().take(5).collect();
-        if enabled_tools.len() > 5 {
-            items.push(DiagItem::ok(
-                cat,
-                format!("including: {}... (+{} more)", 
-                    sample.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
-                    enabled_tools.len() - 5
-                ),
-            ));
+    }
+
+    if config.mcp.enabled {
+        if config.mcp.servers.is_empty() {
+            items.push(DiagItem::warn(cat, "MCP enabled but no servers configured"));
         } else {
             items.push(DiagItem::ok(
                 cat,
-                format!("including: {}", 
-                    sample.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
-                ),
+                format!("{} MCP servers configured", config.mcp.servers.len()),
             ));
         }
-    }
-
-    // Check disabled tools
-    if !config.disabled_tools.is_empty() {
-        items.push(DiagItem::ok(
-            cat,
-            format!("{} tools disabled", config.disabled_tools.len()),
-        ));
-    }
-
-    // Check MCP servers
-    let mcp_config = &config.mcp;
-    if !mcp_config.servers.is_empty() {
-        items.push(DiagItem::ok(
-            cat,
-            format!("{} MCP servers configured", mcp_config.servers.len()),
-        ));
     }
 }
 
@@ -1503,9 +1499,7 @@ fn get_directory_size(path: &std::path::Path) -> std::io::Result<u64> {
 
 /// Helper: Get disk available space in GB
 fn get_disk_available(path: &std::path::Path) -> Option<f64> {
-    use std::os::unix::fs::MetadataExt;
-    
-    if let Ok(metadata) = std::fs::metadata(path) {
+    if let Ok(_metadata) = std::fs::metadata(path) {
         // On Unix, we can use statvfs for disk space
         #[cfg(unix)]
         {
@@ -1515,7 +1509,7 @@ fn get_disk_available(path: &std::path::Path) -> Option<f64> {
             if let Ok(path_c) = CString::new(path.as_os_str().as_bytes()) {
                 unsafe {
                     let mut stat: libc::statvfs = std::mem::zeroed();
-                    
+
                     if libc::statvfs(path_c.as_ptr(), &mut stat) == 0 {
                         let available_bytes = stat.f_bavail as u64 * stat.f_frsize as u64;
                         return Some(available_bytes as f64 / 1024.0 / 1024.0 / 1024.0);

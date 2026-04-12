@@ -61,6 +61,7 @@ pub use otp::OtpValidator;
 #[allow(unused_imports)]
 pub use pairing::PairingGuard;
 pub use policy::{AutonomyLevel, SecurityPolicy};
+#[allow(unused_imports)]
 pub use policy_engine::{EvaluationContext, PolicyDecision, PolicyEngine};
 #[allow(unused_imports)]
 pub use secrets::SecretStore;
@@ -68,7 +69,7 @@ pub use secrets::SecretStore;
 pub use traits::{NoopSandbox, Sandbox};
 // Nevis IAM integration
 #[allow(unused_imports)]
-pub use iam_policy::IamPolicy;
+pub use iam_policy::{IamPolicy, PolicyDecision as IamPolicyDecision};
 #[allow(unused_imports)]
 pub use nevis::{NevisAuthProvider, NevisIdentity};
 // Prompt injection defense exports
