@@ -14,8 +14,10 @@
 ## 🇨🇳 中文用户快速通道
 
 > **这是你的个人 AI 助手，运行在你自己的设备上。轻量、快速、可长期运行。**
+> 
+> 本分支已完成基于 **Claw Code 优秀理念** 的一期改造，重点吸收其控制平面设计思想，同时保持 zeroclaw 的轻量特性。
 
-### 核心特性（P0/P1 改造成果）
+### 🎯 一期改造成果（P0/P1）
 
 | 能力 | 说明 | 状态 |
 |------|------|------|
@@ -26,7 +28,7 @@
 | **分层配置** | 支持 workspace / project / local 三层配置覆盖 | ✅ 已落地 |
 | **健康监控** | 组件级健康追踪，支持错误记录与状态查询 | ✅ 已落地 |
 
-### 实测性能
+### 📊 实测性能
 
 ```
 镜像大小：~60MB
@@ -34,7 +36,7 @@
 启动时间：<10ms
 ```
 
-### 快速开始
+### 🚀 快速开始
 
 ```bash
 # Docker 运行（推荐）
@@ -53,7 +55,7 @@ docker exec zeroclaw zeroclaw status
 docker exec zeroclaw zeroclaw doctor
 ```
 
-### 配置示例（QQ 机器人）
+### 📝 配置示例（QQ 机器人）
 
 ```toml
 # ~/.zeroclaw/config.toml
@@ -67,12 +69,13 @@ app_id = "你的 QQ 应用 ID"
 app_secret = "你的 QQ 应用密钥"
 ```
 
-### 文档导航
+### 📚 文档导航
 
 - [中文完整文档](docs/i18n/zh-CN/README.md)
 - [架构说明](docs/architecture.md)
 - [配置参考](docs/reference/api/config-reference.md)
 - [故障排除](docs/ops/troubleshooting.md)
+- [CHANGELOG](CHANGELOG.md)
 
 ---
 
