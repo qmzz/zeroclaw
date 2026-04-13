@@ -9,6 +9,73 @@
   ⚡️ <strong>Runs on $10 hardware with <5MB RAM: That's 99% less memory than OpenClaw and 98% cheaper than a Mac mini!</strong>
 </p>
 
+---
+
+## 🇨🇳 中文用户快速通道
+
+> **这是你的个人 AI 助手，运行在你自己的设备上。轻量、快速、可长期运行。**
+
+### 核心特性（P0/P1 改造成果）
+
+| 能力 | 说明 | 状态 |
+|------|------|------|
+| **结构化诊断** | `/doctor` 全面诊断系统健康，`/status` 实时查看运行状态 | ✅ 已落地 |
+| **确定性压缩** | 优先做可验证的确定性压缩，而非完全依赖 LLM 摘要 | ✅ 已落地 |
+| **策略引擎** | 工具调用带权限检查，支持分层策略控制 | ✅ 已落地 |
+| **故障分类与恢复** | 自动记录失败类型，提供恢复路径建议 | ✅ 已落地 |
+| **分层配置** | 支持 workspace / project / local 三层配置覆盖 | ✅ 已落地 |
+| **健康监控** | 组件级健康追踪，支持错误记录与状态查询 | ✅ 已落地 |
+
+### 实测性能
+
+```
+镜像大小：~60MB
+运行内存：~6MB
+启动时间：<10ms
+```
+
+### 快速开始
+
+```bash
+# Docker 运行（推荐）
+docker run -d --name zeroclaw \
+  -v ~/.zeroclaw:/root/.zeroclaw \
+  -p 42617:42617 \
+  ghcr.io/qmzz/zeroclaw:test
+
+# 访问网页仪表板
+# http://localhost:42617
+
+# 查看状态
+docker exec zeroclaw zeroclaw status
+
+# 运行诊断
+docker exec zeroclaw zeroclaw doctor
+```
+
+### 配置示例（QQ 机器人）
+
+```toml
+# ~/.zeroclaw/config.toml
+
+default_provider = "openrouter"
+api_key = "sk-..."
+
+[channels.qq]
+enabled = true
+app_id = "你的 QQ 应用 ID"
+app_secret = "你的 QQ 应用密钥"
+```
+
+### 文档导航
+
+- [中文完整文档](docs/i18n/zh-CN/README.md)
+- [架构说明](docs/architecture.md)
+- [配置参考](docs/reference/api/config-reference.md)
+- [故障排除](docs/ops/troubleshooting.md)
+
+---
+
 <p align="center">
   <a href="https://github.com/zeroclaw-labs/zeroclaw/actions/workflows/ci-run.yml"><img src="https://img.shields.io/github/actions/workflow/status/zeroclaw-labs/zeroclaw/ci-run.yml?branch=master&label=build" alt="Build Status" /></a>
   <a href="LICENSE-APACHE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache%202.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
