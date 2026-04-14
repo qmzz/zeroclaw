@@ -63,7 +63,7 @@ docker exec zeroclaw zeroclaw doctor
 default_provider = "openrouter"
 api_key = "sk-..."
 
-[channels.qq]
+[channels_config.qq]
 enabled = true
 app_id = "你的 QQ 应用 ID"
 app_secret = "你的 QQ 应用密钥"
