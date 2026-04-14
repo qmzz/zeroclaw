@@ -133,6 +133,70 @@ pub async fn handle_api_status(
     Json(body).into_response()
 }
 
+/// GET /api/channels — detailed channel list for dashboard
+pub async fn handle_api_channels(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    let health = crate::health::snapshot();
+
+    let channels: Vec<serde_json::Value> = config
+        .channels_config
+        .channels()
+        .into_iter()
+        .map(|(channel, enabled)| {
+            let name = channel.name().to_string();
+            let health_key = if name == "webhook" {
+                "channels".to_string()
+            } else {
+                format!("channel:{name}")
+            };
+
+            let component = health.components.get(&health_key);
+            let status = if !enabled {
+                "inactive"
+            } else if let Some(component) = component {
+                match component.status.as_str() {
+                    "ok" => "active",
+                    "error" => "error",
+                    _ => "inactive",
+                }
+            } else {
+                "inactive"
+            };
+
+            let health_status = if !enabled {
+                "down"
+            } else if let Some(component) = component {
+                match component.status.as_str() {
+                    "ok" => "healthy",
+                    "error" => "degraded",
+                    _ => "down",
+                }
+            } else {
+                "down"
+            };
+
+            serde_json::json!({
+                "name": name,
+                "type": "builtin",
+                "enabled": enabled,
+                "status": status,
+                "message_count": 0,
+                "last_message_at": serde_json::Value::Null,
+                "health": health_status,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({ "channels": channels })).into_response()
+}
+
 /// GET /api/config — current config (api_key masked)
 pub async fn handle_api_config_get(
     State(state): State<AppState>,
